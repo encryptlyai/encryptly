@@ -282,7 +282,7 @@ class Encryptly:
         # Issue new token
         new_token = self._issue_token(agent_info["agent_id"])
         
-        print(f"🔄 Token rotated for agent: {agent_info['agent_id']}")
+        print(f"Token rotated for agent: {agent_info['agent_id']}")
         return new_token
     
     def unregister(self, agent_id: str) -> bool:
@@ -309,7 +309,7 @@ class Encryptly:
         
         self._log_event("AGENT_UNREGISTERED", agent_id, {})
         
-        print(f"❌ Agent unregistered: {agent_id}")
+        print(f"Agent unregistered: {agent_id}")
         return True
     
     def get_status(self) -> Dict[str, Any]:
