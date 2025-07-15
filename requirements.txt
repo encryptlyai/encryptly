@@ -1,0 +1,11 @@
+# AgentVault SDK Requirements
+# Core dependencies for authentication and security
+
+# JWT token handling
+PyJWT>=2.8.0
+
+# Cryptography for secure token signing
+cryptography>=41.0.0
+
+# Type hints support
+typing-extensions>=4.7.0; python_version < '3.9' 
