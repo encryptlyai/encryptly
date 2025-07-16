@@ -8,11 +8,12 @@ import hmac
 import secrets
 import time
 import json
+import sqlite3
 from typing import Dict, Optional, Tuple, Any
 from datetime import datetime, timedelta
 
 from .exceptions import EncryptlyError, TokenError, VerificationError, KeyRotationError
-from .config import ACTIVE_KEYS, get_first_key, get_key_by_kid
+from .config import ACTIVE_KEYS, get_first_key, get_key_by_kid, get_default_kid, get_secret
 
 
 class Encryptly:
@@ -29,31 +30,92 @@ class Encryptly:
         ```
     """
     
-    def __init__(self, secret_key: Optional[str] = None, token_expiry_hours: int = 24):
+    def __init__(self, secret_key: Optional[str] = None, token_expiry_hours: int = 24, db_path: str = "encryptly.db"):
         """
         Initialize AgentVault.
         
         Args:
             secret_key: Optional secret key for JWT signing. Auto-generated if None.
             token_expiry_hours: How long tokens remain valid (default: 24 hours)
+            db_path: Path to SQLite database file
         """
         # Use key rotation if available, otherwise fall back to single key
         if ACTIVE_KEYS:
-            self.secret_key = get_first_key(ACTIVE_KEYS) or secret_key or secrets.token_urlsafe(32)
+            default_kid = get_default_kid(ACTIVE_KEYS)
+            self.secret_key = ACTIVE_KEYS[default_kid]  # bytes
+            self.default_kid = default_kid
             self.active_keys = ACTIVE_KEYS
         else:
             self.secret_key = secret_key or secrets.token_urlsafe(32)
+            self.default_kid = None
             self.active_keys = {}
         
         self.algorithm = "HS256"
         self.token_expiry_hours = token_expiry_hours
+        self.db_path = db_path
         self.issued_tokens: Dict[str, Dict] = {}
         self.agent_registry: Dict[str, Dict] = {}
         self.audit_log = []
         
+        # Initialize database
+        self._init_database()
+        
         print(f"Encryptly initialized (token expiry: {token_expiry_hours}h)")
     
-    def register(self, agent_id: str, role: str, agent_class: str, kid: Optional[str] = None) -> str:
+    def _init_database(self):
+        """Initialize SQLite database with required tables."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Create agents table with revoked_at column and unique constraint
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS agents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id TEXT UNIQUE NOT NULL,
+                    owner_email TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    agent_class TEXT NOT NULL,
+                    agent_hash TEXT NOT NULL,
+                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    revoked_at TIMESTAMP NULL,
+                    status TEXT DEFAULT 'active'
+                )
+            """)
+            
+            # Create unique index on agent_id and owner_email
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_owner 
+                ON agents(agent_id, owner_email)
+            """)
+            
+            # Create tokens table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tokens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token_id TEXT UNIQUE NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL,
+                    revoked_at TIMESTAMP NULL,
+                    status TEXT DEFAULT 'active',
+                    FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+                )
+            """)
+            
+            # Create audit_log table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    event_type TEXT NOT NULL,
+                    agent_id TEXT,
+                    details TEXT
+                )
+            """)
+            
+            conn.commit()
+    
+    def register(self, agent_id: str, role: str, agent_class: str, kid: Optional[str] = None, owner_email: str = "default@example.com") -> str:
         """
         Register an agent and get authentication token.
         
@@ -82,14 +144,29 @@ class Encryptly:
         # Generate unique agent hash for integrity
         agent_hash = hashlib.sha256(f"{agent_id}:{role}:{agent_class}".encode()).hexdigest()
         
-        # Store agent registration
-        self.agent_registry[agent_id] = {
-            "role": role,
-            "class": agent_class,
-            "hash": agent_hash,
-            "registered_at": datetime.now().isoformat(),
-            "status": "active"
-        }
+        # Store agent registration in database
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            try:
+                cursor.execute("""
+                    INSERT INTO agents (agent_id, owner_email, role, agent_class, agent_hash, status)
+                    VALUES (?, ?, ?, ?, ?, 'active')
+                """, (agent_id, owner_email, role, agent_class, agent_hash))
+                
+                conn.commit()
+                
+                # Store in memory cache
+                self.agent_registry[agent_id] = {
+                    "role": role,
+                    "class": agent_class,
+                    "hash": agent_hash,
+                    "registered_at": datetime.now().isoformat(),
+                    "status": "active"
+                }
+                
+            except sqlite3.IntegrityError:
+                raise EncryptlyError(f"Agent {agent_id} already registered")
         
         # Issue initial token
         token = self._issue_token(agent_id, kid)
@@ -174,7 +251,7 @@ class Encryptly:
             return False, None
         except jwt.InvalidTokenError as e:
             self._log_event("TOKEN_VERIFICATION_FAILED", "unknown", {"reason": f"invalid_token: {str(e)}"})
-            return False, None
+            raise VerificationError(str(e)) from e
         except Exception as e:
             self._log_event("TOKEN_VERIFICATION_FAILED", "unknown", {"reason": f"verification_error: {str(e)}"})
             return False, None
@@ -214,8 +291,9 @@ class Encryptly:
         
         # Sign the message
         message_str = json.dumps(message_data, sort_keys=True)
+        secret_bytes = self.secret_key if isinstance(self.secret_key, bytes) else self.secret_key.encode()
         signature = hmac.new(
-            self.secret_key.encode(),
+            secret_bytes,
             message_str.encode(),
             hashlib.sha256
         ).hexdigest()
@@ -255,8 +333,9 @@ class Encryptly:
             message_str = json.dumps(signed_message, sort_keys=True)
             
             # Verify signature
+            secret_bytes = self.secret_key if isinstance(self.secret_key, bytes) else self.secret_key.encode()
             expected_signature = hmac.new(
-                self.secret_key.encode(),
+                secret_bytes,
                 message_str.encode(),
                 hashlib.sha256
             ).hexdigest()
@@ -327,10 +406,30 @@ class Encryptly:
         if agent_id not in self.agent_registry:
             return False
         
-        # Mark agent as inactive
+        # Update database
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Mark agent as inactive
+            cursor.execute("""
+                UPDATE agents 
+                SET status = 'inactive', revoked_at = CURRENT_TIMESTAMP
+                WHERE agent_id = ?
+            """, (agent_id,))
+            
+            # Revoke all tokens for this agent
+            cursor.execute("""
+                UPDATE tokens 
+                SET status = 'revoked', revoked_at = CURRENT_TIMESTAMP
+                WHERE agent_id = ? AND status = 'active'
+            """, (agent_id,))
+            
+            conn.commit()
+        
+        # Update memory cache
         self.agent_registry[agent_id]["status"] = "inactive"
         
-        # Revoke all tokens for this agent
+        # Revoke all tokens for this agent in memory
         for token_id, token_info in self.issued_tokens.items():
             if token_info["agent_id"] == agent_id and token_info["status"] == "active":
                 token_info["status"] = "revoked"
@@ -381,33 +480,42 @@ class Encryptly:
             # Key rotation mode
             if kid:
                 # Use specified kid
-                secret_key = get_key_by_kid(self.active_keys, kid)
-                if not secret_key:
-                    raise KeyRotationError(f"Unknown key ID: {kid}")
+                secret = get_secret(self.active_keys, kid)
             else:
-                # Use first key
-                secret_key = get_first_key(self.active_keys)
-                if not secret_key:
+                # Use default kid
+                kid = get_default_kid(self.active_keys)
+                if kid is None:
                     raise KeyRotationError("No active keys available")
-                kid = next(iter(self.active_keys.keys()))
+                secret = get_secret(self.active_keys, kid)
         else:
-            # Single key mode
-            secret_key = self.secret_key
+            # Single key mode - skip .encode('utf-8') because secret already bytes
+            secret = self.secret_key
             kid = None
         
-        # Sign the token with kid header if in rotation mode
-        if kid:
-            token = jwt.encode(payload, secret_key, algorithm=self.algorithm, headers={"kid": kid})
-        else:
-            token = jwt.encode(payload, secret_key, algorithm=self.algorithm)
+        # Sign the token with kid header only if kid is not None
+        kid_header = {"kid": kid} if kid is not None else {}
+        token = jwt.encode(payload, secret, algorithm=self.algorithm, headers=kid_header)
         
-        # Store token info
-        self.issued_tokens[payload["jti"]] = {
-            "agent_id": agent_id,
-            "issued_at": datetime.now().isoformat(),
-            "expires_at": (datetime.now() + timedelta(hours=self.token_expiry_hours)).isoformat(),
-            "status": "active"
-        }
+        # Store token info in database
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            expires_at = datetime.now() + timedelta(hours=self.token_expiry_hours)
+            
+            cursor.execute("""
+                INSERT INTO tokens (token_id, agent_id, expires_at, status)
+                VALUES (?, ?, ?, 'active')
+            """, (payload["jti"], agent_id, expires_at.isoformat()))
+            
+            conn.commit()
+            
+            # Store in memory cache
+            self.issued_tokens[payload["jti"]] = {
+                "agent_id": agent_id,
+                "issued_at": datetime.now().isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "status": "active"
+            }
         
         self._log_event("TOKEN_ISSUED", agent_id, {"token_id": payload["jti"]})
         
@@ -420,6 +528,19 @@ class Encryptly:
             token_id = payload.get("jti")
             
             if token_id and token_id in self.issued_tokens:
+                # Update database
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    
+                    cursor.execute("""
+                        UPDATE tokens 
+                        SET status = 'revoked', revoked_at = CURRENT_TIMESTAMP
+                        WHERE token_id = ? AND status = 'active'
+                    """, (token_id,))
+                    
+                    conn.commit()
+                
+                # Update memory cache
                 self.issued_tokens[token_id]["status"] = "revoked"
                 self.issued_tokens[token_id]["revoked_at"] = datetime.now().isoformat()
                 
@@ -439,6 +560,19 @@ class Encryptly:
             "agent_id": agent_id,
             "details": details
         }
+        
+        # Store in database
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO audit_log (event_type, agent_id, details)
+                VALUES (?, ?, ?)
+            """, (event_type, agent_id, json.dumps(details)))
+            
+            conn.commit()
+        
+        # Keep in memory cache
         self.audit_log.append(event)
         
         # Keep only last 1000 events for MVP
