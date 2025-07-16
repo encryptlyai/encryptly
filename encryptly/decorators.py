@@ -3,17 +3,24 @@ AgentVault SDK - Decorators for Easy Authentication
 """
 
 import functools
+import inspect
 from typing import Callable, Any, Optional
-from .exceptions import AuthenticationError, KeyRotationError
+from .exceptions import AuthenticationError, KeyRotationError, VerificationError
 
 
-def requires_auth(vault_instance: Any, token_param: str = "token"):
+def requires_auth(vault_instance: Any, token_param: str = "token", memoize: bool = False):
     """
     Decorator to require authentication for agent methods.
     
     Args:
         vault_instance: The AgentVault instance to use for verification
         token_param: Parameter name containing the authentication token
+        memoize: Whether to cache successful verifications (default: False)
+       
+    Note:
+        The decorated function must supply token as a keyword argument,
+        or the decorator will detect the token parameter by name in positional arguments.
+        Token must be passed as kwarg or as a positional argument with the correct parameter name.
        
     Example:
         ```python
@@ -24,23 +31,41 @@ def requires_auth(vault_instance: Any, token_param: str = "token"):
         ```
     """
     def decorator(func: Callable) -> Callable:
+        # Get function signature for parameter detection
+        sig = inspect.signature(func)
+        param_names = list(sig.parameters.keys())
+        
+        # Optional memoization for successful verifications
+        if memoize:
+            @functools.lru_cache(maxsize=256)
+            def verify_token_cached(token: str) -> tuple[bool, Optional[dict]]:
+                return vault_instance.verify(token)
+        else:
+            verify_token_cached = vault_instance.verify
+        
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             # Get token from parameters
             token = kwargs.get(token_param)
+            if not token and args and token_param in param_names:
+                token = args[param_names.index(token_param)]
+            
             if not token:
                 raise AuthenticationError(f"Missing required parameter: {token_param}")
             
             # Verify token
             try:
-                is_valid, agent_info = vault_instance.verify(token)
-                if not is_valid:
-                    raise AuthenticationError("Invalid or expired authentication token")
+                verified, meta = verify_token_cached(token)
             except KeyRotationError as e:
-                raise AuthenticationError(f"Key rotation error: {e}")
+                raise AuthenticationError("key rotation failure") from e
+            except VerificationError as e:
+                raise AuthenticationError("bad signature") from e
+            
+            if not verified:
+                raise AuthenticationError("Invalid or expired authentication token")
             
             # Add agent info to kwargs for use in the method
-            kwargs["_agent_info"] = agent_info
+            kwargs["_agent_info"] = meta
             
             return func(*args, **kwargs)
         return wrapper
@@ -124,15 +149,18 @@ def verify_caller(vault_instance: Any, token_param: str = "caller_token"):
             
             # Verify caller token
             try:
-                is_valid, caller_info = vault_instance.verify(caller_token)
-                if not is_valid:
-                    raise AuthenticationError("Invalid caller authentication token")
+                verified, meta = vault_instance.verify(caller_token)
             except KeyRotationError as e:
-                raise AuthenticationError(f"Key rotation error: {e}")
+                raise AuthenticationError("key rotation failure") from e
+            except VerificationError as e:
+                raise AuthenticationError("bad signature") from e
+            
+            if not verified:
+                raise AuthenticationError("Invalid caller authentication token")
             
             # Add caller info to kwargs
-            kwargs["_caller_info"] = caller_info
-            
+            kwargs["_caller_info"] = meta
+           
             return func(*args, **kwargs)
         return wrapper
     return decorator 
