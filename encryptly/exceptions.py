@@ -5,7 +5,8 @@ Encryptly SDK - Custom Exceptions
 
 class EncryptlyError(Exception):
     """Base exception for all Encryptly errors."""
-    pass
+    def __str__(self) -> str:
+        return self.args[0] if self.args else super().__str__()
 
 
 class TokenError(EncryptlyError):
@@ -31,3 +32,12 @@ class AuthenticationError(EncryptlyError):
 class KeyRotationError(EncryptlyError):
     """Raised when key rotation operations fail."""
     pass 
+
+__all__ = [
+    "EncryptlyError",
+    "TokenError",
+    "VerificationError",
+    "RegistrationError",
+    "AuthenticationError",
+    "KeyRotationError",
+]
