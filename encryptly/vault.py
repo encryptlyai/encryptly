@@ -13,7 +13,7 @@ from typing import Dict, Optional, Tuple, Any
 from datetime import datetime, timedelta
 
 from .exceptions import EncryptlyError, TokenError, VerificationError, KeyRotationError
-from .config import ACTIVE_KEYS, get_first_key, get_key_by_kid, get_default_kid, get_secret
+from .config import ACTIVE_KEYS, get_key_by_kid, get_default_kid, get_secret
 
 
 class Encryptly:
@@ -41,13 +41,12 @@ class Encryptly:
         """
         # Use key rotation if available, otherwise fall back to single key
         if ACTIVE_KEYS:
-            default_kid = get_default_kid(ACTIVE_KEYS)
-            self.secret_key = ACTIVE_KEYS[default_kid]  # bytes
-            self.default_kid = default_kid
+            self.default_kid = get_default_kid(ACTIVE_KEYS)
+            self.secret_key = ACTIVE_KEYS[self.default_kid]  # bytes
             self.active_keys = ACTIVE_KEYS
         else:
-            self.secret_key = secret_key or secrets.token_urlsafe(32)
             self.default_kid = None
+            self.secret_key = (secret_key or secrets.token_urlsafe(32)).encode()
             self.active_keys = {}
         
         self.algorithm = "HS256"
@@ -488,7 +487,7 @@ class Encryptly:
                     raise KeyRotationError("No active keys available")
                 secret = get_secret(self.active_keys, kid)
         else:
-            # Single key mode - skip .encode('utf-8') because secret already bytes
+            # Single key mode - skip .encode() if secret already bytes
             secret = self.secret_key
             kid = None
         
