@@ -25,4 +25,9 @@ class RegistrationError(EncryptlyError):
 
 class AuthenticationError(EncryptlyError):
     """Raised when authentication fails."""
+    pass
+
+
+class KeyRotationError(EncryptlyError):
+    """Raised when key rotation operations fail."""
     pass 

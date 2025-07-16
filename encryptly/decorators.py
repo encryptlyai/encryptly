@@ -4,7 +4,7 @@ AgentVault SDK - Decorators for Easy Authentication
 
 import functools
 from typing import Callable, Any, Optional
-from .exceptions import AuthenticationError
+from .exceptions import AuthenticationError, KeyRotationError
 
 
 def requires_auth(vault_instance: Any, token_param: str = "token"):
@@ -32,9 +32,12 @@ def requires_auth(vault_instance: Any, token_param: str = "token"):
                 raise AuthenticationError(f"Missing required parameter: {token_param}")
             
             # Verify token
-            is_valid, agent_info = vault_instance.verify(token)
-            if not is_valid:
-                raise AuthenticationError("Invalid or expired authentication token")
+            try:
+                is_valid, agent_info = vault_instance.verify(token)
+                if not is_valid:
+                    raise AuthenticationError("Invalid or expired authentication token")
+            except KeyRotationError as e:
+                raise AuthenticationError(f"Key rotation error: {e}")
             
             # Add agent info to kwargs for use in the method
             kwargs["_agent_info"] = agent_info
@@ -120,9 +123,12 @@ def verify_caller(vault_instance: Any, token_param: str = "caller_token"):
                 raise AuthenticationError(f"Missing required parameter: {token_param}")
             
             # Verify caller token
-            is_valid, caller_info = vault_instance.verify(caller_token)
-            if not is_valid:
-                raise AuthenticationError("Invalid caller authentication token")
+            try:
+                is_valid, caller_info = vault_instance.verify(caller_token)
+                if not is_valid:
+                    raise AuthenticationError("Invalid caller authentication token")
+            except KeyRotationError as e:
+                raise AuthenticationError(f"Key rotation error: {e}")
             
             # Add caller info to kwargs
             kwargs["_caller_info"] = caller_info

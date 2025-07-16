@@ -38,6 +38,7 @@ Examples:
     register_parser.add_argument("role", help="Agent role (e.g., DataAnalyst)")
     register_parser.add_argument("--class", dest="agent_class", default="CLIAgent",
                                  help="Agent class name (default: CLIAgent)")
+    register_parser.add_argument("--kid", dest="kid", help="Key ID for key rotation")
     
     # Verify command
     verify_parser = subparsers.add_parser("verify", help="Verify an authentication token")
@@ -58,7 +59,7 @@ Examples:
         elif args.command == "demo":
             return cmd_demo()
         elif args.command == "register":
-            return cmd_register(args.agent_id, args.role, args.agent_class)
+            return cmd_register(args.agent_id, args.role, args.agent_class, args.kid)
         elif args.command == "verify":
             return cmd_verify(args.token)
         elif args.command == "status":
@@ -125,15 +126,17 @@ def cmd_demo() -> int:
     return 0
 
 
-def cmd_register(agent_id: str, role: str, agent_class: str) -> int:
+def cmd_register(agent_id: str, role: str, agent_class: str, kid: Optional[str] = None) -> int:
     """Register a new agent."""
     vault = Encryptly()
     
     try:
-        token = vault.register(agent_id, role, agent_class)
+        token = vault.register(agent_id, role, agent_class, kid)
         print(f"Agent registered successfully!")
         print(f"Agent ID: {agent_id}")
         print(f"Role: {role}")
+        if kid:
+            print(f"Key ID: {kid}")
         print(f"Token: {token}")
         print(f"\nSave this token securely - it's needed for authentication.")
         return 0

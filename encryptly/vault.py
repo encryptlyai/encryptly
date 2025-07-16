@@ -11,7 +11,8 @@ import json
 from typing import Dict, Optional, Tuple, Any
 from datetime import datetime, timedelta
 
-from .exceptions import EncryptlyError, TokenError, VerificationError
+from .exceptions import EncryptlyError, TokenError, VerificationError, KeyRotationError
+from .config import ACTIVE_KEYS, get_first_key, get_key_by_kid
 
 
 class Encryptly:
@@ -36,7 +37,14 @@ class Encryptly:
             secret_key: Optional secret key for JWT signing. Auto-generated if None.
             token_expiry_hours: How long tokens remain valid (default: 24 hours)
         """
-        self.secret_key = secret_key or secrets.token_urlsafe(32)
+        # Use key rotation if available, otherwise fall back to single key
+        if ACTIVE_KEYS:
+            self.secret_key = get_first_key(ACTIVE_KEYS) or secret_key or secrets.token_urlsafe(32)
+            self.active_keys = ACTIVE_KEYS
+        else:
+            self.secret_key = secret_key or secrets.token_urlsafe(32)
+            self.active_keys = {}
+        
         self.algorithm = "HS256"
         self.token_expiry_hours = token_expiry_hours
         self.issued_tokens: Dict[str, Dict] = {}
@@ -45,7 +53,7 @@ class Encryptly:
         
         print(f"Encryptly initialized (token expiry: {token_expiry_hours}h)")
     
-    def register(self, agent_id: str, role: str, agent_class: str) -> str:
+    def register(self, agent_id: str, role: str, agent_class: str, kid: Optional[str] = None) -> str:
         """
         Register an agent and get authentication token.
         
@@ -53,16 +61,19 @@ class Encryptly:
             agent_id: Unique identifier for your agent
             role: What the agent does (e.g., "DataAnalyst", "RiskAdvisor")
             agent_class: Python class name for verification
+            kid: Optional key ID for key rotation (default: first key)
             
         Returns:
             str: Authentication token for the agent
             
         Raises:
             AgentVaultError: If agent already registered
+            KeyRotationError: If specified kid is unknown
             
         Example:
             ```python
             token = vault.register("analyst-001", "DataAnalyst", "MyAnalystAgent")
+            token = vault.register("analyst-001", "DataAnalyst", "MyAnalystAgent", kid="v2")
             ```
         """
         if agent_id in self.agent_registry:
@@ -81,7 +92,7 @@ class Encryptly:
         }
         
         # Issue initial token
-        token = self._issue_token(agent_id)
+        token = self._issue_token(agent_id, kid)
         
         # Audit log
         self._log_event("AGENT_REGISTERED", agent_id, {"role": role, "class": agent_class})
@@ -107,8 +118,24 @@ class Encryptly:
             ```
         """
         try:
+            # Extract kid from token header for key rotation
+            header = jwt.get_unverified_header(token)
+            kid = header.get("kid")
+            
+            # Determine which key to use for verification
+            if self.active_keys and kid:
+                # Key rotation mode - look up key by kid
+                secret_key = get_key_by_kid(self.active_keys, kid)
+                if not secret_key:
+                    self._log_event("TOKEN_VERIFICATION_FAILED", "unknown", 
+                                  {"reason": "unknown_kid", "kid": kid})
+                    raise KeyRotationError(f"Unknown key ID: {kid}")
+            else:
+                # Single key mode - use default secret
+                secret_key = self.secret_key
+            
             # Decode and verify JWT
-            payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+            payload = jwt.decode(token, secret_key, algorithms=[self.algorithm])
             
             # Check if token is still active
             token_id = payload.get("jti")
@@ -258,18 +285,20 @@ class Encryptly:
             self._log_event("MESSAGE_VERIFICATION_ERROR", "unknown", {"error": str(e)})
             return False
     
-    def rotate_token(self, old_token: str) -> str:
+    def rotate_token(self, old_token: str, kid: Optional[str] = None) -> str:
         """
         Rotate an agent's token for security.
         
         Args:
             old_token: Current token to rotate
+            kid: Optional key ID for key rotation (default: first key)
             
         Returns:
             str: New authentication token
             
         Raises:
             TokenError: If old token is invalid
+            KeyRotationError: If specified kid is unknown
         """
         # Verify old token
         is_valid, agent_info = self.verify(old_token)
@@ -280,7 +309,7 @@ class Encryptly:
         self._revoke_token(old_token)
         
         # Issue new token
-        new_token = self._issue_token(agent_info["agent_id"])
+        new_token = self._issue_token(agent_info["agent_id"], kid)
         
         print(f"Token rotated for agent: {agent_info['agent_id']}")
         return new_token
@@ -331,7 +360,7 @@ class Encryptly:
             "version": "0.1.0"
         }
     
-    def _issue_token(self, agent_id: str) -> str:
+    def _issue_token(self, agent_id: str, kid: Optional[str] = None) -> str:
         """Issue a new JWT token for an agent."""
         agent_info = self.agent_registry[agent_id]
         
@@ -347,8 +376,30 @@ class Encryptly:
             "jti": secrets.token_hex(8)  # Unique token ID
         }
         
-        # Sign the token
-        token = jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
+        # Determine which key to use for signing
+        if self.active_keys:
+            # Key rotation mode
+            if kid:
+                # Use specified kid
+                secret_key = get_key_by_kid(self.active_keys, kid)
+                if not secret_key:
+                    raise KeyRotationError(f"Unknown key ID: {kid}")
+            else:
+                # Use first key
+                secret_key = get_first_key(self.active_keys)
+                if not secret_key:
+                    raise KeyRotationError("No active keys available")
+                kid = next(iter(self.active_keys.keys()))
+        else:
+            # Single key mode
+            secret_key = self.secret_key
+            kid = None
+        
+        # Sign the token with kid header if in rotation mode
+        if kid:
+            token = jwt.encode(payload, secret_key, algorithm=self.algorithm, headers={"kid": kid})
+        else:
+            token = jwt.encode(payload, secret_key, algorithm=self.algorithm)
         
         # Store token info
         self.issued_tokens[payload["jti"]] = {
