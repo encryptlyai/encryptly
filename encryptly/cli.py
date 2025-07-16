@@ -5,9 +5,10 @@ Encryptly SDK - Command Line Interface
 import argparse
 import sys
 from typing import Optional
-
+import argcomplete
 from .vault import Encryptly
 from .exceptions import EncryptlyError
+from .config import ACTIVE_KEYS
 
 
 def main():
@@ -31,6 +32,7 @@ Examples:
     
     # Demo command
     demo_parser = subparsers.add_parser("demo", help="Run AgentVault demonstration")
+    demo_parser.add_argument("--kid", dest="kid", help="Key ID for key rotation")
     
     # Register command
     register_parser = subparsers.add_parser("register", help="Register a new agent")
@@ -47,6 +49,7 @@ Examples:
     # Status command
     status_parser = subparsers.add_parser("status", help="Show vault status")
     
+    argcomplete.autocomplete(parser)
     args = parser.parse_args()
     
     if not args.command:
@@ -57,7 +60,7 @@ Examples:
         if args.command == "version":
             return cmd_version()
         elif args.command == "demo":
-            return cmd_demo()
+            return cmd_demo(args.kid)
         elif args.command == "register":
             return cmd_register(args.agent_id, args.role, args.agent_class, args.kid)
         elif args.command == "verify":
@@ -68,7 +71,7 @@ Examples:
             print(f"Unknown command: {args.command}")
             return 1
     except EncryptlyError as e:
-        print(f"Error: {e}")
+        print(f"Error: {e}", file=sys.stderr)
         return 1
     except Exception as e:
         print(f"Unexpected error: {e}")
@@ -83,21 +86,28 @@ def cmd_version() -> int:
     return 0
 
 
-def cmd_demo() -> int:
+def cmd_demo(kid: Optional[str] = None) -> int:
     """Run a simple demonstration."""
     print("Encryptly SDK Demo")
     print("=" * 30)
+    
+    if kid and (kid not in ACTIVE_KEYS):
+        print(f"\033[91m[ERROR]\033[0m Unknown key ID: {kid}", file=sys.stderr)
+        return 1
     
     # Initialize vault
     vault = Encryptly()
     
     # Register some agents
     print("\n1. Registering agents...")
-    analyst_token = vault.register("demo-analyst", "DataAnalyst", "DemoAnalyst")
-    trader_token = vault.register("demo-trader", "TradeExecutor", "DemoTrader")
+    analyst_token = vault.register("demo-analyst", "DataAnalyst", "DemoAnalyst", kid=kid)
+    trader_token = vault.register("demo-trader", "TradeExecutor", "DemoTrader", kid=kid)
     
-    print(f"Analyst token: {analyst_token[:20]}...")
-    print(f"Trader token: {trader_token[:20]}...")
+    def mask_token(token):
+        return token[:8] + "…" + token[-6:] if len(token) > 14 else token
+    
+    print(f"Analyst token: {mask_token(analyst_token)}")
+    print(f"Trader token: {mask_token(trader_token)}")
     
     # Verify tokens
     print("\n2. Verifying tokens...")
@@ -128,6 +138,9 @@ def cmd_demo() -> int:
 
 def cmd_register(agent_id: str, role: str, agent_class: str, kid: Optional[str] = None) -> int:
     """Register a new agent."""
+    if kid and (kid not in ACTIVE_KEYS):
+        print(f"\033[91m[ERROR]\033[0m Unknown key ID: {kid}", file=sys.stderr)
+        return 1
     vault = Encryptly()
     
     try:
