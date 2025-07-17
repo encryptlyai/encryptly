@@ -168,7 +168,16 @@ class Encryptly:
                 raise EncryptlyError(f"Agent {agent_id} already registered")
         
         # Issue initial token
-        token = self._issue_token(agent_id, kid)
+        try:
+            token = self._issue_token(agent_id, kid)
+        except KeyRotationError as e:
+            # Clean up agent registration if token issuance fails
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
+                conn.commit()
+            del self.agent_registry[agent_id]
+            raise
         
         # Audit log
         self._log_event("AGENT_REGISTERED", agent_id, {"role": role, "class": agent_class})
@@ -250,7 +259,7 @@ class Encryptly:
             return False, None
         except jwt.InvalidTokenError as e:
             self._log_event("TOKEN_VERIFICATION_FAILED", "unknown", {"reason": f"invalid_token: {str(e)}"})
-            raise VerificationError(str(e)) from e
+            return False, None
         except Exception as e:
             self._log_event("TOKEN_VERIFICATION_FAILED", "unknown", {"reason": f"verification_error: {str(e)}"})
             return False, None
@@ -479,7 +488,10 @@ class Encryptly:
             # Key rotation mode
             if kid:
                 # Use specified kid
-                secret = get_secret(self.active_keys, kid)
+                try:
+                    secret = get_secret(self.active_keys, kid)
+                except KeyError:
+                    raise KeyRotationError(f"Unknown key ID: {kid}")
             else:
                 # Use default kid
                 kid = get_default_kid(self.active_keys)

@@ -48,7 +48,9 @@ def requires_auth(vault_instance: Any, token_param: str = "token", memoize: bool
             # Get token from parameters
             token = kwargs.get(token_param)
             if not token and args and token_param in param_names:
-                token = args[param_names.index(token_param)]
+                idx = param_names.index(token_param)
+                if idx < len(args):
+                    token = args[idx]
             
             if not token:
                 raise AuthenticationError(f"Missing required parameter: {token_param}")

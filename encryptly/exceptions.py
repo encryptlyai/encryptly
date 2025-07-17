@@ -14,11 +14,6 @@ class TokenError(EncryptlyError):
     pass
 
 
-class VerificationError(EncryptlyError):
-    """Raised when verification fails."""
-    pass
-
-
 class RegistrationError(EncryptlyError):
     """Raised when agent registration fails."""
     pass
@@ -31,6 +26,11 @@ class AuthenticationError(EncryptlyError):
 
 class KeyRotationError(EncryptlyError):
     """Raised when key rotation operations fail."""
+    pass
+
+
+class VerificationError(EncryptlyError):
+    """Raised when verification fails."""
     pass 
 
 __all__ = [

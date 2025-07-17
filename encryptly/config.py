@@ -58,23 +58,36 @@ def load_active_keys() -> Dict[str, bytes]:
     return active_keys
 
 
-def get_first_key(active_keys: Dict[str, bytes]) -> Optional[bytes]:
+def _deprecated_get_first_key(active_keys: Dict[str, bytes]) -> Optional[bytes]:
     """
-    Get the first key from active keys dict.
-    
-    DEPRECATED: Use get_default_kid() instead.
-    
+    DEPRECATED — will be removed in v0.2.
+
+    Historically returned the *first secret* from the active‐keys dictionary.
+    New code should instead call ``get_default_kid()`` to retrieve the *kid*
+    and then fetch the secret via ``get_secret()``.
+
     Args:
-        active_keys: Dict of kid to secret mappings
-        
+        active_keys: Dict of kid → secret‐bytes mappings.
+
     Returns:
-        First secret bytes, or None if no keys available
+        The first secret (``bytes``) if any keys exist, otherwise ``None``.
+
+    Raises:
+        DeprecationWarning: Always, to alert callers at runtime.
     """
-    warnings.warn("get_first_key() is deprecated, use get_default_kid() instead", DeprecationWarning)
+    warnings.warn(
+        "_deprecated_get_first_key() is deprecated; "
+        "use get_default_kid() / get_secret() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if not active_keys:
         return None
-    
     return next(iter(active_keys.values()))
+
+
+# Backward‑compatibility alias — will be removed in v0.2
+get_first_key = _deprecated_get_first_key
 
 
 def get_key_by_kid(active_keys: Dict[str, bytes], kid: str) -> Optional[bytes]:
@@ -129,4 +142,14 @@ def get_secret(active_keys: Dict[str, bytes], kid: str) -> bytes:
 
 
 # Global active keys cache
-ACTIVE_KEYS = load_active_keys() 
+ACTIVE_KEYS = load_active_keys()
+
+__all__ = [
+    "ACTIVE_KEYS",
+    "load_active_keys",
+    "get_key_by_kid",
+    "get_default_kid",
+    "get_secret",
+    # Deprecated — slated for removal in v0.2
+    "get_first_key",
+]

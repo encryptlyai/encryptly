@@ -74,7 +74,7 @@ Examples:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        print(f"Unexpected error: {e}", file=sys.stderr)
         return 1
 
 
@@ -142,7 +142,7 @@ def cmd_register(agent_id: str, role: str, agent_class: str, kid: Optional[str] 
         print(f"\033[91m[ERROR]\033[0m Unknown key ID: {kid}", file=sys.stderr)
         return 1
     vault = Encryptly()
-    
+   
     try:
         token = vault.register(agent_id, role, agent_class, kid)
         print(f"Agent registered successfully!")
