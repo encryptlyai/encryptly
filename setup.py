@@ -8,13 +8,9 @@ from setuptools import setup, find_packages
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
-# Read requirements
-with open("requirements.txt", "r", encoding="utf-8") as fh:
-    requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
-
 setup(
     name="encryptly",
-    version="0.1.0",
+    version="0.1.1",
     author="Encryptly Team",
     author_email="support@encryptly.com",
     description="Lightweight Authentication for AI Agents",
@@ -45,7 +41,12 @@ setup(
         "Topic :: System :: Systems Administration :: Authentication/Directory",
     ],
     python_requires=">=3.8",
-    install_requires=requirements,
+    install_requires=[
+        "PyJWT>=2.8.0",
+        "cryptography>=41.0.0",
+        "typing-extensions>=4.7.0; python_version < '3.9'",
+        "argcomplete>=3.0.0",
+    ],
     extras_require={
         "dev": [
             "pytest>=7.0",
