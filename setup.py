@@ -10,7 +10,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="encryptly",
-    version="0.1.1",
+    version="0.1.2",
     author="Encryptly Team",
     author_email="support@encryptly.com",
     description="Lightweight Authentication for AI Agents",
